@@ -4,8 +4,46 @@
             [io.pedestal.http.route :as route]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.log :as log]
+            [io.pedestal.http.jetty.websockets :as ws]
             [ring.util.response :as ring-resp]
-            [clojure.core.async :as async]))
+            [clojure.core.async :as async])
+  (:import (org.eclipse.jetty.websocket.api Session)))
+
+(def ws-clients (atom {}))
+
+(defn new-ws-client
+  "Keeps track of all client sessions"
+  [ws-session send-ch]
+  (async/put! send-ch "Welcome!")
+  (swap! ws-clients assoc ws-session send-ch))
+
+(defn send-and-close!
+  "Utility function to send message to a client and close the connection"
+  [message]
+  (let [[ws-session send-ch] (first @ws-clients)]
+    (async/put! send-ch message)
+    (async/close! send-ch)
+    (swap! ws-clients dissoc ws-session)
+    (log/info :msg (str "Active Connections: " (count @ws-clients)))))
+
+(defn send-message-to-all!
+  "Utility function to send message to all clients"
+  [message]
+  (doseq [[^Session session channel] @ws-clients]
+    (when (.isOpen session)
+      (async/put! channel message))))
+
+(def ws-paths
+  {"/chat" {:on-connect (ws/start-ws-connection new-ws-client)
+            :on-text (fn [msg]
+                       (log/info :msg (str "Client: " msg)))
+            :on-binary (fn [payload offset length]
+                         (log/info :msg "Binary Message!" :bytes payload))
+            :on-error (fn [t]
+                        (log/error :msg "WS Error happened" :exception t))
+            :on-close (fn [num-code reason-text]
+                        (log/info :msg "WS Closed:"
+                                  :reason reason-text))}})
 
 (defn sse-stream-ready
   "Starts sending counter events to client."
@@ -135,4 +173,5 @@
                                         ;; Alternatively, You can specify you're own Jetty HTTPConfiguration
                                         ;; via the `:io.pedestal.http.jetty/http-configuration` container option.
                                         ;:io.pedestal.http.jetty/http-configuration (org.eclipse.jetty.server.HttpConfiguration.)
+                                        :context-configurator #(ws/add-ws-endpoints % ws-paths)
                                         }})
