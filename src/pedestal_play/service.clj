@@ -1,9 +1,30 @@
 (ns pedestal-play.service
   (:require [io.pedestal.http :as http]
+            [io.pedestal.http.sse :as sse]
             [io.pedestal.http.route :as route]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.log :as log]
-            [ring.util.response :as ring-resp]))
+            [ring.util.response :as ring-resp]
+            [clojure.core.async :as async]))
+
+(defn sse-stream-ready
+  "Starts sending counter events to client."
+  [event-ch context]
+  (let [count-num (Integer/parseInt
+                    (or (-> (context :request)
+                            :query-params
+                            :counter) "5"))]
+    (loop [counter count-num]
+      (async/put!
+        event-ch {:name "count"
+                  :data (str counter ", T: "
+                             (.getId (Thread/currentThread)))})
+      (Thread/sleep 2000)
+      (if (> counter 1)
+        (recur (dec counter))
+        (do
+          (async/put! event-ch {:name "close" :data "I am done!"})
+          (async/close! event-ch))))))
 
 (defn about-page
   [request]
@@ -55,7 +76,8 @@
 (def routes #{["/" :get (conj common-interceptors `home-page)]
               ["/debug/:id" :post (conj common-interceptors `debug-page)]
               ["/hello" :get (conj common-interceptors `msg-play `hello-page)]
-              ["/about" :get (conj common-interceptors `about-page)]})
+              ["/about" :get (conj common-interceptors `about-page)]
+              ["/events" :get [(sse/start-event-stream sse-stream-ready)]]})
 
 ;; Map-based routes
 ;(def routes `{"/" {:interceptors [(body-params/body-params) http/html-body]
